@@ -288,6 +288,13 @@ void SeedChooserScreen::GetSeedPositionInChooser(int theIndex, int& x, int& y)
 		x = mImitaterButton->mX;
 		y = mImitaterButton->mY;
 	}
+	else if (theIndex == SEED_SLINGSHOT || theIndex == SEED_DARTMONKEY || theIndex == SEED_SONIC)
+	{
+		// The 8x6 grid is full, so the mod plants stack in a column above the Imitater
+		int aSlot = theIndex - SEED_SLINGSHOT + 1;
+		x = mImitaterButton->mX;
+		y = mImitaterButton->mY - aSlot * 73;
+	}
 	else
 	{
 		int aRow = theIndex / 8;
