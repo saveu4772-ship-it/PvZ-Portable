@@ -2296,6 +2296,10 @@ bool LawnApp::HasSeedType(SeedType theSeedType)
 		return mPlayerInfo->mPurchases[StoreItem::STORE_ITEM_PLANT_COBCANNON] > 0;
 	case SeedType::SEED_IMITATER:
 		return mPlayerInfo->mPurchases[StoreItem::STORE_ITEM_PLANT_IMITATER] > 0;
+	case SeedType::SEED_SLINGSHOT:
+	case SeedType::SEED_DARTMONKEY:
+	case SeedType::SEED_SONIC:
+		return true;  // mod plants are always unlocked
 	default:
 		return theSeedType < GetSeedsAvailable();
 	}
