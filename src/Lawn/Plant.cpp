@@ -95,6 +95,9 @@ constinit const PlantDefinition gPlantDefs[SeedType::NUM_SEED_TYPES] = {
 	{ .mSeedType = SeedType::SEED_SPIKEROCK,         .mPlantImage = nullptr, .mReanimationType = ReanimationType::REANIM_SPIKEROCK,     .mPacketIndex = 27, .mSeedCost = 125, .mRefreshTime = 5000,   .mSubClass = PlantSubClass::SUBCLASS_NORMAL,  .mLaunchRate = 0,    .mPlantName = "SPIKEROCK" },
 	{ .mSeedType = SeedType::SEED_COBCANNON,         .mPlantImage = nullptr, .mReanimationType = ReanimationType::REANIM_COBCANNON,     .mPacketIndex = 16, .mSeedCost = 500, .mRefreshTime = 5000,   .mSubClass = PlantSubClass::SUBCLASS_NORMAL,  .mLaunchRate = 600,  .mPlantName = "COB_CANNON" },
 	{ .mSeedType = SeedType::SEED_IMITATER,          .mPlantImage = nullptr, .mReanimationType = ReanimationType::REANIM_IMITATER,      .mPacketIndex = 33, .mSeedCost = 0,   .mRefreshTime = 750,    .mSubClass = PlantSubClass::SUBCLASS_NORMAL,  .mLaunchRate = 0,    .mPlantName = "IMITATER" },
+	{ .mSeedType = SeedType::SEED_SLINGSHOT,      .mPlantImage = &Sexy::IMAGE_SLINGSHOT,   .mReanimationType = ReanimationType::REANIM_NONE, .mPacketIndex = 0, .mSeedCost = 150, .mRefreshTime = 750,  .mSubClass = PlantSubClass::SUBCLASS_NORMAL,  .mLaunchRate = 0,   .mPlantName = "SLINGSHOT" },
+	{ .mSeedType = SeedType::SEED_DARTMONKEY,     .mPlantImage = &Sexy::IMAGE_DARTMONKEY,  .mReanimationType = ReanimationType::REANIM_NONE, .mPacketIndex = 0, .mSeedCost = 100, .mRefreshTime = 750,  .mSubClass = PlantSubClass::SUBCLASS_SHOOTER, .mLaunchRate = 120, .mPlantName = "DART_MONKEY" },
+	{ .mSeedType = SeedType::SEED_SONIC,          .mPlantImage = &Sexy::IMAGE_SONIC,       .mReanimationType = ReanimationType::REANIM_NONE, .mPacketIndex = 0, .mSeedCost = 175, .mRefreshTime = 1500, .mSubClass = PlantSubClass::SUBCLASS_NORMAL,  .mLaunchRate = 0,   .mPlantName = "SONIC" },
 	{ .mSeedType = SeedType::SEED_EXPLODE_O_NUT,     .mPlantImage = nullptr, .mReanimationType = ReanimationType::REANIM_WALLNUT,       .mPacketIndex = 2,  .mSeedCost = 0,   .mRefreshTime = 3000,   .mSubClass = PlantSubClass::SUBCLASS_NORMAL,  .mLaunchRate = 0,    .mPlantName = "EXPLODE_O_NUT" },
 	{ .mSeedType = SeedType::SEED_GIANT_WALLNUT,     .mPlantImage = nullptr, .mReanimationType = ReanimationType::REANIM_WALLNUT,       .mPacketIndex = 2,  .mSeedCost = 0,   .mRefreshTime = 3000,   .mSubClass = PlantSubClass::SUBCLASS_NORMAL,  .mLaunchRate = 0,    .mPlantName = "GIANT_WALLNUT" },
 	{ .mSeedType = SeedType::SEED_SPROUT,            .mPlantImage = nullptr, .mReanimationType = ReanimationType::REANIM_ZENGARDEN_SPROUT, .mPacketIndex = 33, .mSeedCost = 0,   .mRefreshTime = 3000,   .mSubClass = PlantSubClass::SUBCLASS_NORMAL,  .mLaunchRate = 0,    .mPlantName = "SPROUT" },
@@ -134,6 +137,9 @@ void Plant::PlantInitialize(int theGridX, int theGridY, SeedType theSeedType, Se
 	mDoSpecialCountdown = 0;
 	mDisappearCountdown = 200;
 	mStateCountdown = 0;
+	mSlingshotState = 0;
+	mSlingshotDragX = 0;
+	mSlingshotDragY = 0;
 	mParticleID = ParticleSystemID::PARTICLESYSTEMID_NULL;
 	mBodyReanimID = ReanimationID::REANIMATIONID_NULL;
 	mHeadReanimID = ReanimationID::REANIMATIONID_NULL;
@@ -2574,6 +2580,7 @@ void Plant::UpdateAbilities()
 	else if (mSeedType == SeedType::SEED_SPIKEWEED || mSeedType == SeedType::SEED_SPIKEROCK)    UpdateSpikeweed();
 	else if (mSeedType == SeedType::SEED_TANGLEKELP)                                            UpdateTanglekelp();
 	else if (mSeedType == SeedType::SEED_SCAREDYSHROOM)                                         UpdateScaredyShroom();
+	else if (mSeedType == SeedType::SEED_SLINGSHOT || mSeedType == SeedType::SEED_SONIC)        UpdateSlingshot();   // Sonic's spin dash lives in UpdateSlingshot too
 
 	if (mSubclass == PlantSubClass::SUBCLASS_SHOOTER)
 	{
@@ -3934,6 +3941,56 @@ void Plant::DrawShadow(Sexy::Graphics* g, float theOffsetX, float theOffsetY)
 	}
 }
 
+// ---------------------------------------------------------------------------
+// SEED_SLINGSHOT physics (Angry Birds style): pull back, aim, release.
+// Launch speed comes from how far you pull, launch angle from the pull direction,
+// then the bird follows a normal gravity arc.
+// ---------------------------------------------------------------------------
+static const float SLINGSHOT_ANCHOR_X = 30.0f;          // resting pouch centre, relative to the plant
+static const float SLINGSHOT_ANCHOR_Y = 25.0f;
+static const float SLINGSHOT_MAX_PULL = 120.0f;         // max stretch in pixels
+static const float SLINGSHOT_MAX_PULL_DOWN = 50.0f;     // can't pull the bird through the ground
+static const float SLINGSHOT_MIN_PULL = 15.0f;          // shorter pulls are cancelled
+static const float SLINGSHOT_SPEED_PER_PIXEL = 0.105f;  // launch speed per pixel of pull (full pull ~12.6 px/tick)
+static const float SLINGSHOT_GRAVITY = 0.18f;           // bigger = faster, flatter arcs
+static const int   SLINGSHOT_COOLDOWN = 300;            // ticks spent in state 2 after firing
+
+// Clamps the pull and returns its length
+static float SlingshotPull(float theAnchorX, float theAnchorY, int theDragX, int theDragY, float& thePullX, float& thePullY)
+{
+	thePullX = (float)theDragX - theAnchorX;
+	thePullY = (float)theDragY - theAnchorY;
+
+	float aLength = sqrtf(thePullX * thePullX + thePullY * thePullY);
+	if (aLength > SLINGSHOT_MAX_PULL)
+	{
+		thePullX *= SLINGSHOT_MAX_PULL / aLength;
+		thePullY *= SLINGSHOT_MAX_PULL / aLength;
+	}
+	if (thePullY > SLINGSHOT_MAX_PULL_DOWN)
+		thePullY = SLINGSHOT_MAX_PULL_DOWN;
+
+	return sqrtf(thePullX * thePullX + thePullY * thePullY);
+}
+
+// ---------------------------------------------------------------------------
+// SEED_SONIC spin dash. He waits in his tile; when a zombie in his lane comes within range he
+// curls into a ball, dashes out and back, and hurts every zombie he touches on the way.
+// Reuses the slingshot's state fields:
+//   mSlingshotState : 0 = waiting, 1 = dashing out, 2 = spinning back, 3 = cooling down
+//   mSlingshotDragX : how far the ball is from the tile (pixels)
+//   mSlingshotDragY : ticks until the ball can hit again
+// ---------------------------------------------------------------------------
+static const int SONIC_RANGE = 360;         // how far he dashes (about 4.5 tiles)
+static const int SONIC_SPEED = 14;          // pixels per tick
+static const int SONIC_DAMAGE = 20;         // per hit
+static const int SONIC_HIT_INTERVAL = 8;    // ticks between hits while touching a zombie
+static const int SONIC_COOLDOWN = 120;      // ticks of rest after getting back
+static const int SONIC_BALL_X = 18;         // where the ball sits inside the tile
+static const int SONIC_BALL_Y = 28;
+static const int SONIC_BALL_W = 44;
+static const int SONIC_BALL_H = 40;
+
 void Plant::Draw(Graphics* g)
 {
 	float aOffsetX = 0.0f;
@@ -3945,6 +4002,22 @@ void Plant::Draw(Graphics* g)
 
 	int aImageIndex = mFrame;
 	Image* aPlantImage = Plant::GetImage(mSeedType);
+
+	// Single-picture plants (slingshot, dart monkey, Sonic) never ask for a frame that doesn't exist
+	if (aPlantImage && aImageIndex >= aPlantImage->mNumCols)
+	{
+		aImageIndex = 0;
+	}
+
+	if (mSeedType == SeedType::SEED_SONIC && !mSquished && (mSlingshotState == 1 || mSlingshotState == 2))
+	{
+		// Sonic is out spin dashing: draw just the spinning ball
+		int aBallFrame = (mSlingshotDragX / 12) % 6;
+		if (aBallFrame < 0)
+			aBallFrame += 6;
+		PvzpDrawImageCelF(g, Sexy::IMAGE_SONICBALL, aOffsetX + SONIC_BALL_X + mSlingshotDragX, aOffsetY + SONIC_BALL_Y, aBallFrame, 0);
+		return;
+	}
 
 	if (mSquished)
 	{
@@ -4094,6 +4167,40 @@ void Plant::Draw(Graphics* g)
 			DrawMagnetItems(g);
 		}
 	}
+
+	// Slingshot aiming: the bird drawn pulled back, plus dots showing the flight path
+	if (mSeedType == SeedType::SEED_SLINGSHOT && mSlingshotState == 1 && !mSquished)
+	{
+		float aPullX, aPullY;
+		float aPull = SlingshotPull(mX + SLINGSHOT_ANCHOR_X, mY + SLINGSHOT_ANCHOR_Y, mSlingshotDragX, mSlingshotDragY, aPullX, aPullY);
+		if (aPull >= SLINGSHOT_MIN_PULL)
+		{
+			float aVelX = -aPullX * SLINGSHOT_SPEED_PER_PIXEL;
+			float aVelZ = -aPullY * SLINGSHOT_SPEED_PER_PIXEL;
+
+			int aLastRow = mBoard->StageHas6Rows() ? 5 : 4;
+			float aFloorZ = 80.0f + (float)(mBoard->GridToPixelY(mPlantCol, aLastRow) - mBoard->GridToPixelY(mPlantCol, mRow));
+
+			float aSimX = aPullX;
+			float aSimZ = aPullY;
+			for (int aTick = 1; aTick <= 60 && aSimZ <= aFloorZ; aTick++)
+			{
+				aVelZ += SLINGSHOT_GRAVITY;  // same order the projectile uses each tick
+				aSimX += aVelX;
+				aSimZ += aVelZ;
+				if (aTick % 4 == 0)
+				{
+					g->SetColor(Color(255, 255, 255, 220));
+					g->FillRect((int)(SLINGSHOT_ANCHOR_X + aSimX) - 2, (int)(SLINGSHOT_ANCHOR_Y + aSimZ) - 2, 4, 4);
+				}
+			}
+
+			if (Sexy::IMAGE_ANGRYBIRD_RED)
+			{
+				g->DrawImage(Sexy::IMAGE_ANGRYBIRD_RED, (int)(10.0f + aPullX), (int)(5.0f + aPullY));
+			}
+		}
+	}
 }
 
 void Plant::DrawSeedType(Graphics* g, SeedType theSeedType, SeedType theImitaterType, DrawVariation theDrawVariation, float thePosX, float thePosY)
@@ -4197,6 +4304,12 @@ void Plant::MouseDown(int x, int y, int theClickCount)
 		mBoard->mCobCannonCursorDelayCounter = 30;
 		mBoard->mCobCannonMouseX = x;
 		mBoard->mCobCannonMouseY = y;
+	}
+	else if (mSeedType == SeedType::SEED_SLINGSHOT && mSlingshotState == 0 && IsInPlay())
+	{
+		mSlingshotState = 1;  // Dragging
+		mSlingshotDragX = x;
+		mSlingshotDragY = y;
 	}
 }
 
@@ -4473,6 +4586,148 @@ void Plant::CobCannonFire(int theTargetX, int theTargetY)
 	aTrackInstance->mTrackColor = Color::White;
 }
 
+// ---------------------------------------------------------------------------
+// SEED_SLINGSHOT: drag back to aim, release to launch
+// ---------------------------------------------------------------------------
+void Plant::MouseDrag(int x, int y)
+{
+	if (mSeedType == SeedType::SEED_SLINGSHOT && mSlingshotState == 1)
+	{
+		mSlingshotDragX = x;
+		mSlingshotDragY = y;
+	}
+}
+
+void Plant::MouseUp(int x, int y)
+{
+	if (mSeedType != SeedType::SEED_SLINGSHOT || mSlingshotState != 1)
+		return;
+
+	mSlingshotDragX = x;
+	mSlingshotDragY = y;
+	SlingshotLaunch(x, y);
+}
+
+void Plant::SlingshotLaunch(int theDragX, int theDragY)
+{
+	float aPullX, aPullY;
+	float aPull = SlingshotPull(mX + SLINGSHOT_ANCHOR_X, mY + SLINGSHOT_ANCHOR_Y, theDragX, theDragY, aPullX, aPullY);
+
+	// Fling opposite to the pull: pull back and down to shoot forward and up
+	float aVelX = -aPullX * SLINGSHOT_SPEED_PER_PIXEL;
+	float aVelZ = -aPullY * SLINGSHOT_SPEED_PER_PIXEL;
+	if (aPull < SLINGSHOT_MIN_PULL || aVelX < 1.0f)
+	{
+		mSlingshotState = 0;  // too weak or pulled the wrong way: cancel
+		return;
+	}
+
+	// The bird leaves from where it was pulled back to, and stays in this row
+	Projectile* aProjectile = mBoard->AddProjectile(mX + 10 + (int)aPullX, mY + 5, mRenderOrder - 1, mRow, ProjectileType::PROJECTILE_BIRD_RED);
+	aProjectile->mDamageRangeFlags = 13;
+	aProjectile->mMotionType = ProjectileMotion::MOTION_LOBBED;
+	aProjectile->mPosZ = aPullY;
+	aProjectile->mY = (int)(aProjectile->mPosY + aProjectile->mPosZ);
+	aProjectile->mVelX = aVelX;
+	aProjectile->mVelY = 0.0f;
+	aProjectile->mVelZ = aVelZ;
+	aProjectile->mAccZ = SLINGSHOT_GRAVITY;
+	mApp->PlayFoley(FoleyType::FOLEY_THROW);
+
+	mSlingshotState = 2;  // Fired / Cooling down
+	mStateCountdown = SLINGSHOT_COOLDOWN;
+}
+
+void Plant::UpdateSlingshot()
+{
+	if (mSeedType == SeedType::SEED_SONIC)
+	{
+		if (mSquished || mIsAsleep || !IsInPlay())
+			return;
+
+		const unsigned int aDamageRangeFlags = 13;
+
+		if (mSlingshotState == 0)
+		{
+			// Waiting: start dashing as soon as a zombie in this lane is within range
+			Rect aRange(mX + 40, mY, SONIC_RANGE, 80);
+			for (Zombie* aZombie : mBoard->mZombies)
+			{
+				if (aZombie->mDead)
+					continue;
+				if (aZombie->mRow == mRow && aZombie->EffectedByDamage(aDamageRangeFlags))
+				{
+					Rect aZombieRect = aZombie->GetZombieRect();
+					if (GetRectOverlap(aRange, aZombieRect) > 0)
+					{
+						mSlingshotState = 1;
+						mSlingshotDragX = 0;
+						mSlingshotDragY = 0;
+						mApp->PlayFoley(FoleyType::FOLEY_THROW);
+						break;
+					}
+				}
+			}
+		}
+		else if (mSlingshotState == 1 || mSlingshotState == 2)
+		{
+			// Dashing out (1) or spinning back (2)
+			mSlingshotDragX += (mSlingshotState == 1) ? SONIC_SPEED : -SONIC_SPEED;
+
+			if (mSlingshotDragY > 0)
+			{
+				mSlingshotDragY--;
+			}
+			else
+			{
+				Rect aBall(mX + SONIC_BALL_X + mSlingshotDragX, mY + SONIC_BALL_Y, SONIC_BALL_W, SONIC_BALL_H);
+				bool aHitSomething = false;
+				for (Zombie* aZombie : mBoard->mZombies)
+				{
+					if (aZombie->mDead)
+						continue;
+					if (aZombie->mRow == mRow && aZombie->EffectedByDamage(aDamageRangeFlags))
+					{
+						Rect aZombieRect = aZombie->GetZombieRect();
+						if (GetRectOverlap(aBall, aZombieRect) > 0)
+						{
+							aZombie->TakeDamage(SONIC_DAMAGE, 0U);
+							aHitSomething = true;
+						}
+					}
+				}
+				if (aHitSomething)
+				{
+					mApp->PlayFoley(FoleyType::FOLEY_SPLAT);
+					mSlingshotDragY = SONIC_HIT_INTERVAL;
+				}
+			}
+
+			if (mSlingshotState == 1 && mSlingshotDragX >= SONIC_RANGE)
+			{
+				mSlingshotState = 2;
+			}
+			else if (mSlingshotState == 2 && mSlingshotDragX <= 0)
+			{
+				mSlingshotDragX = 0;
+				mSlingshotState = 3;
+				mStateCountdown = SONIC_COOLDOWN;
+			}
+		}
+		else if (mSlingshotState == 3)
+		{
+			// Resting (mStateCountdown is decremented once per tick in UpdateAbilities)
+			if (mStateCountdown <= 0)
+				mSlingshotState = 0;
+		}
+		return;
+	}
+
+	// Slingshot: mStateCountdown is already decremented once per tick in UpdateAbilities
+	if (mSlingshotState == 2 && mStateCountdown <= 0)
+		mSlingshotState = 0;  // ready to be dragged again
+}
+
 void Plant::Fire(Zombie* theTargetZombie, int theRow, PlantWeapon thePlantWeapon)
 {
 	if (mSeedType == SeedType::SEED_FUMESHROOM)
@@ -4529,6 +4784,9 @@ void Plant::Fire(Zombie* theTargetZombie, int theRow, PlantWeapon thePlantWeapon
 		break;
 	case SeedType::SEED_COBCANNON:
 		aProjectileType = ProjectileType::PROJECTILE_COBBIG;
+		break;
+	case SeedType::SEED_DARTMONKEY:
+		aProjectileType = ProjectileType::PROJECTILE_DART;
 		break;
 	default:
 		PVZP_ASSERT(false);
@@ -4643,6 +4901,11 @@ void Plant::Fire(Zombie* theTargetZombie, int theRow, PlantWeapon thePlantWeapon
 			aOriginX = mX + 70;
 			aOriginY = mY + 23;
 		}
+	}
+	else if (mSeedType == SeedType::SEED_DARTMONKEY)
+	{
+		aOriginX = mX + 52;   // just in front of the monkey's head
+		aOriginY = mY + 29;
 	}
 	else if (mSeedType == SeedType::SEED_COBCANNON)
 	{
@@ -5036,6 +5299,13 @@ int Plant::GetCost(SeedType theSeedType, SeedType theImitaterType)
 
 std::string Plant::GetNameString(SeedType theSeedType, SeedType theImitaterType)
 {
+	if (theSeedType == SeedType::SEED_SLINGSHOT)
+		return "Slingshot";
+	if (theSeedType == SeedType::SEED_DARTMONKEY)
+		return "Dart Monkey";
+	if (theSeedType == SeedType::SEED_SONIC)
+		return "Sonic";
+
 	const PlantDefinition& aPlantDef = GetPlantDefinition(theSeedType);
 	std::string aName = std::format("[{}]", aPlantDef.mPlantName);
 	std::string aTranslatedName(PvzpStringTranslate(aName));
@@ -5053,6 +5323,13 @@ std::string Plant::GetNameString(SeedType theSeedType, SeedType theImitaterType)
 
 std::string Plant::GetToolTip(SeedType theSeedType)
 {
+	if (theSeedType == SeedType::SEED_SLINGSHOT)
+		return "Drag back and release to launch an angry bird.";
+	if (theSeedType == SeedType::SEED_DARTMONKEY)
+		return "Throws darts down its lane.";
+	if (theSeedType == SeedType::SEED_SONIC)
+		return "Spin dashes down his lane and back, hurting every zombie he touches.";
+
 	const PlantDefinition& aPlantDef = GetPlantDefinition(theSeedType);
 	std::string aToolTip = std::format("[{}_TOOLTIP]", aPlantDef.mPlantName);
 	return std::string(PvzpStringTranslate(aToolTip));

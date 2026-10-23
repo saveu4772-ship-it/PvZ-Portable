@@ -48,7 +48,9 @@ constinit const ProjectileDefinition gProjectileDefinition[] = {
 	{ .mProjectileType = ProjectileType::PROJECTILE_KERNEL, .mImageRow = 0, .mDamage = 20 },
 	{ .mProjectileType = ProjectileType::PROJECTILE_COBBIG, .mImageRow = 0, .mDamage = 300 },
 	{ .mProjectileType = ProjectileType::PROJECTILE_BUTTER, .mImageRow = 0, .mDamage = 40 },
-	{ .mProjectileType = ProjectileType::PROJECTILE_ZOMBIE_PEA, .mImageRow = 0, .mDamage = 20 }
+	{ .mProjectileType = ProjectileType::PROJECTILE_ZOMBIE_PEA, .mImageRow = 0, .mDamage = 20 },
+	{ .mProjectileType = ProjectileType::PROJECTILE_BIRD_RED, .mImageRow = 0, .mDamage = 60 },
+	{ .mProjectileType = ProjectileType::PROJECTILE_DART, .mImageRow = 0, .mDamage = 20 }
 };
 
 Projectile::Projectile()
@@ -145,6 +147,14 @@ void Projectile::ProjectileInitialize(int theX, int theY, int theRenderOrder, in
 			mRotationSpeed = -mRotationSpeed;
 		}
 		break;
+	case ProjectileType::PROJECTILE_BIRD_RED:
+		mRotation = -7 * PI / 25;
+		mRotationSpeed = RandRangeFloat(-0.28f, -0.18f);  // the bird tumbles end over end
+		break;
+	case ProjectileType::PROJECTILE_DART:
+		mWidth = 48;
+		mHeight = 22;
+		break;
 	default:
 		break;
 	}
@@ -229,12 +239,13 @@ Zombie* Projectile::FindCollisionTarget()
 	Rect aProjectileRect = GetProjectileRect();
 	Zombie* aBestZombie = nullptr;
 	int aMinX = 0;
+	bool aIsBird = mProjectileType == ProjectileType::PROJECTILE_BIRD_RED;
 
 	for (Zombie* aZombie : mBoard->mZombies)
 	{
 		if (aZombie->mDead)
 			continue;
-		if ((aZombie->mZombieType == ZombieType::ZOMBIE_BOSS || aZombie->mRow == mRow) && aZombie->EffectedByDamage(static_cast<unsigned int>(mDamageRangeFlags)))
+		if ((aZombie->mZombieType == ZombieType::ZOMBIE_BOSS || aZombie->mRow == mRow || aIsBird) && aZombie->EffectedByDamage(static_cast<unsigned int>(mDamageRangeFlags)))
 		{
 			if (aZombie->mZombiePhase == ZombiePhase::PHASE_SNORKEL_WALKING_IN_POOL && mPosZ <= 45.0f)
 			{
@@ -246,7 +257,20 @@ Zombie* Projectile::FindCollisionTarget()
 				continue;
 			}
 
+			// A piercing dart has already hit this zombie
+			if (mProjectileType == ProjectileType::PROJECTILE_DART && mBoard->ZombieGetID(aZombie) == mTargetZombieID)
+			{
+				continue;
+			}
+
 			Rect aZombieRect = aZombie->GetZombieRect();
+			if (aIsBird)
+			{
+				// The bird flies through the whole board, so it must really touch the zombie, not just be in its column
+				bool aOverlapsY = aProjectileRect.mY < aZombieRect.mY + aZombieRect.mHeight && aProjectileRect.mY + aProjectileRect.mHeight > aZombieRect.mY;
+				if (!aOverlapsY)
+					continue;
+			}
 			if (GetRectOverlap(aProjectileRect, aZombieRect) >= 0)
 			{
 				if (aBestZombie == nullptr || aZombie->mX < aMinX)
@@ -506,8 +530,26 @@ void Projectile::DoSplashDamage(Zombie* theZombie)
 	}
 }
 
+// Red bird landing: bounces, then rolls to a stop
+static const int   BIRD_MAX_BOUNCES = 4;
+static const float BIRD_BOUNCE_KEEP = 0.5f;     // share of the fall speed kept after each bounce
+static const float BIRD_BOUNCE_SLOW = 0.78f;    // each bounce also slows the bird's forward speed
+static const float BIRD_ROLL_FRICTION = 0.965f; // forward speed kept per tick while rolling
+
 void Projectile::UpdateLobMotion()
 {
+	if (mProjectileType == ProjectileType::PROJECTILE_BIRD_RED && mAccZ == 0.0f)
+	{
+		// Rolling along the ground (no gravity left): slow down and stop
+		mVelX *= BIRD_ROLL_FRICTION;
+		mRotationSpeed = -mVelX / 20.0f;
+		if (mVelX < 0.35f)
+		{
+			Die();
+			return;
+		}
+	}
+
 	if (mProjectileType == ProjectileType::PROJECTILE_COBBIG && mPosZ < -700.0f)
 	{
 		mVelZ = 8.0f;
@@ -533,7 +575,8 @@ void Projectile::UpdateLobMotion()
 	{
 		return;
 	}
-	if (mProjectileAge > 20)
+	// The bird hits whatever it touches, rising or falling, at any height
+	if (mProjectileAge > 20 && mProjectileType != ProjectileType::PROJECTILE_BIRD_RED)
 	{
 		if (isRising)
 		{
@@ -588,9 +631,37 @@ void Projectile::UpdateLobMotion()
 	{
 		aGroundZ = -40.0f;
 	}
+	if (mProjectileType == ProjectileType::PROJECTILE_BIRD_RED)
+	{
+		// The bird can fly down into lower lanes, so the floor is the bottom lane
+		int aGridX = mBoard->PixelToGridXKeepOnBoard((int)mPosX, 0);
+		int aLastRow = mBoard->StageHas6Rows() ? 5 : 4;
+		aGroundZ += (float)(mBoard->GridToPixelY(aGridX, aLastRow) - mBoard->GridToPixelY(aGridX, mRow));
+	}
 	bool hitGround = mPosZ > aGroundZ;
 	if (aZombie == nullptr && aPlant == nullptr && !hitGround)
 	{
+		return;
+	}
+
+	if (mProjectileType == ProjectileType::PROJECTILE_BIRD_RED && aZombie == nullptr && aPlant == nullptr)
+	{
+		// The bird landed on the ground: bounce a few times, then roll to a stop
+		// (mCobTargetRow is unused by birds, so it counts bounces)
+		mPosZ = aGroundZ;
+		mCobTargetRow++;
+		if (mCobTargetRow <= BIRD_MAX_BOUNCES && mVelZ > 2.0f)
+		{
+			mVelZ = -mVelZ * BIRD_BOUNCE_KEEP;
+			mVelX *= BIRD_BOUNCE_SLOW;
+			mRotationSpeed = -mVelX / 12.0f;
+			mApp->PlayFoley(FoleyType::FOLEY_PLASTIC_HIT);
+		}
+		else
+		{
+			mVelZ = 0.0f;
+			mAccZ = 0.0f;   // from here on the bird just rolls
+		}
 		return;
 	}
 
@@ -820,6 +891,9 @@ void Projectile::PlayImpactSound(Zombie* theZombie)
 	}
 }
 
+// How many zombies one dart can hit before it disappears
+static const int DART_PIERCE = 2;
+
 void Projectile::DoImpact(Zombie* theZombie)
 {
 	PlayImpactSound(theZombie);
@@ -837,6 +911,18 @@ void Projectile::DoImpact(Zombie* theZombie)
 	{
 		unsigned int aDamageFlags = GetDamageFlags(theZombie);
 		theZombie->TakeDamage(GetProjectileDef().mDamage, aDamageFlags);
+	}
+
+	// Darts pierce: they keep flying until they have hit DART_PIERCE zombies.
+	// (mCobTargetRow is unused by darts, so it counts zombies hit; mTargetZombieID remembers the last one)
+	if (mProjectileType == ProjectileType::PROJECTILE_DART && theZombie)
+	{
+		mCobTargetRow++;
+		if (mCobTargetRow < DART_PIERCE)
+		{
+			mTargetZombieID = mBoard->ZombieGetID(theZombie);
+			return;
+		}
 	}
 
 	float aLastPosX = mPosX - mVelX;
@@ -953,6 +1039,7 @@ void Projectile::Update()
 		mProjectileType == ProjectileType::PROJECTILE_BUTTER ||
 		mProjectileType == ProjectileType::PROJECTILE_COBBIG ||
 		mProjectileType == ProjectileType::PROJECTILE_ZOMBIE_PEA ||
+		mProjectileType == ProjectileType::PROJECTILE_DART ||
 		mProjectileType == ProjectileType::PROJECTILE_SPIKE)
 	{
 		aTime = 0;
@@ -1027,6 +1114,12 @@ void Projectile::Draw(Graphics* g)
 	case ProjectileType::PROJECTILE_WINTERMELON:
 		aImage = IMAGE_REANIM_WINTERMELON_PROJECTILE;
 		aScale = 1.0f;
+		break;
+	case ProjectileType::PROJECTILE_BIRD_RED:
+		aImage = IMAGE_ANGRYBIRD_RED;
+		break;
+	case ProjectileType::PROJECTILE_DART:
+		aImage = IMAGE_DART;
 		break;
 	default:
 		PVZP_ASSERT(false);
@@ -1187,6 +1280,10 @@ Rect Projectile::GetProjectileRect()
 	else if (mProjectileType == ProjectileType::PROJECTILE_SPIKE)
 	{
 		return Rect(mX - 25, mY, mWidth + 25, mHeight);
+	}
+	else if (mProjectileType == ProjectileType::PROJECTILE_DART)
+	{
+		return Rect(mX + 24, mY, mWidth - 24, mHeight);
 	}
 	else
 	{

@@ -3009,6 +3009,11 @@ void Board::MouseMove(int x, int y)
 void Board::MouseDrag(int x, int y)
 {
 	Widget::MouseDrag(x, y);
+	for (Plant* aPlant : mPlants)
+	{
+		if (!aPlant->mDead && aPlant->mSeedType == SeedType::SEED_SLINGSHOT && aPlant->mSlingshotState == 1)
+			aPlant->MouseDrag(x, y);
+	}
 	mChallenge->MouseMove(x, y);
 }
 
@@ -4581,6 +4586,11 @@ bool Board::CanInteractWithBoardButtons()
 void Board::MouseUp(int x, int y, int theClickCount)
 {
 	Widget::MouseUp(x, y, theClickCount);
+	for (Plant* aPlant : mPlants)
+	{
+		if (!aPlant->mDead && aPlant->mSeedType == SeedType::SEED_SLINGSHOT && aPlant->mSlingshotState == 1)
+			aPlant->MouseUp(x, y);
+	}
 	if (mIgnoreMouseUp)
 	{
 		mIgnoreMouseUp = false;

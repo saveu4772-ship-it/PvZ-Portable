@@ -211,6 +211,9 @@ public:
 	bool                    mIsAsleep;
 	bool                    mIsOnBoard;
 	bool                    mHighlighted;
+	int32_t                 mSlingshotState;   // mod plants: slingshot / Sonic state
+	int32_t                 mSlingshotDragX;
+	int32_t                 mSlingshotDragY;
 
 public:
 	Plant();
@@ -220,6 +223,10 @@ public:
 	void                    Animate();
 	void                    Draw(Graphics* g);
 	void                    MouseDown(int x, int y, int theClickCount);
+	void                    MouseDrag(int x, int y);
+	void                    MouseUp(int x, int y);
+	void                    SlingshotLaunch(int theDragX, int theDragY);
+	void                    UpdateSlingshot();
 	void                    DoSpecial();
 	void                    Fire(Zombie* theTargetZombie, int theRow, PlantWeapon thePlantWeapon = PlantWeapon::WEAPON_PRIMARY);
 	Zombie*                 FindTargetZombie(int theRow, PlantWeapon thePlantWeapon = PlantWeapon::WEAPON_PRIMARY);
